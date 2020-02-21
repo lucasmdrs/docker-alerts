@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"log"
 	"os"
 	"strconv"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/lucasmdrs/dockerstats"
@@ -16,14 +18,14 @@ import (
 
 const (
 	percentageSuffix = "%"
-	alertTemplate    = `[ALERT]
-	Container: %s
-	%s`
+	alertTemplate    = "template.html"
 )
 
 var (
 	destinations = strings.Split(os.Getenv("DESTINATIONS"), ",")
 	hostname, _  = os.Hostname()
+	title        = "Docker Alerts"
+	sender       = "docker@alerts.com"
 
 	gracePeriod              = time.Second * 60
 	containerGracefulMapping = ccMap.New()
@@ -32,7 +34,21 @@ var (
 	cpuLimit float64 = 90
 )
 
+type TemplateInfo struct {
+	Value     string
+	Threshold string
+	Container string
+	Hostname  string
+	Message   string
+}
+
 func init() {
+	if s, isSet := os.LookupEnv("EMAIL_SENDER"); isSet {
+		sender = s
+	}
+	if t, isSet := os.LookupEnv("EMAIL_TITLE"); isSet {
+		title = t
+	}
 	if hn, isSet := os.LookupEnv("HOSTNAME"); isSet {
 		hostname = hn
 	}
@@ -61,10 +77,6 @@ func startGracefulPeriod(key string) {
 }
 
 func evaluate(stats dockerstats.Stats) {
-	var (
-		cpuMsg string
-		memMsg string
-	)
 	parsedCPU, err := strconv.ParseFloat(strings.TrimSuffix(stats.CPU, percentageSuffix), 64)
 	if err != nil {
 		log.Fatalln(err.Error())
@@ -76,28 +88,43 @@ func evaluate(stats dockerstats.Stats) {
 	_, inCPUGrace := containerGracefulMapping.Get(stats.ContainerName + ".cpu")
 	if parsedCPU > cpuLimit && !inCPUGrace {
 		log.Println("NOTIFYING CPU!")
-		cpuMsg = fmt.Sprintf("CPU limit reached: [Threshold: %.2f] [Value: %.2f]", cpuLimit, parsedCPU)
-		notify(fmt.Sprintf(alertTemplate, stats.ContainerName, cpuMsg))
+		info := TemplateInfo{
+			Container: stats.ContainerName,
+			Hostname:  hostname,
+			Message:   "CPU limit reached",
+			Threshold: fmt.Sprintf("%.2f", cpuLimit),
+			Value:     fmt.Sprintf("%.2f", parsedCPU),
+		}
+		notify(parseHTMLTemplate(info), parseTextTemplate(info))
 		containerGracefulMapping.Set(stats.ContainerName+".cpu", true)
 		go startGracefulPeriod(stats.ContainerName + ".cpu")
 	}
 	_, inMemGrace := containerGracefulMapping.Get(stats.ContainerName + ".mem")
 	if parsedMem > memLimit && !inMemGrace {
 		log.Println("NOTIFYING MEMORY!")
-		memMsg = fmt.Sprintf("Memory limit reached: [Threshold: %.2f] [Value: %.2f]", memLimit, parsedMem)
-		notify(fmt.Sprintf(alertTemplate, stats.ContainerName, memMsg))
+		info := TemplateInfo{
+			Container: stats.ContainerName,
+			Hostname:  hostname,
+			Message:   "Memory limit reached",
+			Threshold: fmt.Sprintf("%.2f", memLimit),
+			Value:     fmt.Sprintf("%.2f", parsedMem),
+		}
+		notify(parseHTMLTemplate(info), parseTextTemplate(info))
 		containerGracefulMapping.Set(stats.ContainerName+".mem", true)
 		go startGracefulPeriod(stats.ContainerName + ".mem")
 	}
 }
 
-func notify(msg string) {
+func notify(html, text string) {
+	if html == "" {
+		html = text
+	}
 	parsedMessage := sendmailModels.MailInfo{
-		FromMail:         "dockeralers@lucasmdrs.com",
-		FromName:         "Docker Alerts",
-		Subject:          hostname + " alert",
-		PlainTextContent: msg,
-		HTMLContent:      msg,
+		FromMail:         sender,
+		FromName:         title,
+		Subject:          title,
+		PlainTextContent: text,
+		HTMLContent:      html,
 	}
 	for _, to := range destinations {
 		parsedMessage.To = to
@@ -105,4 +132,30 @@ func notify(msg string) {
 			log.Println(err.Error())
 		}
 	}
+}
+
+func parseTextTemplate(data TemplateInfo) string {
+	return fmt.Sprintf("[ %s - %s ] %s: [Threshold: %s] [Value: %s]",
+		data.Hostname,
+		data.Container,
+		data.Message,
+		data.Threshold,
+		data.Value,
+	)
+}
+
+func parseHTMLTemplate(data TemplateInfo) string {
+	t := template.New("template.html")
+	t, err := t.ParseFiles(alertTemplate)
+	if err != nil {
+		log.Println(err.Error())
+		return ""
+	}
+
+	var tpl bytes.Buffer
+	if err := t.Execute(&tpl, data); err != nil {
+		log.Println(err.Error())
+		return ""
+	}
+	return tpl.String()
 }

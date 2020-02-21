@@ -9,6 +9,8 @@ FROM docker:dind
 
 WORKDIR /root/
 
+ENV EMAIL_SENDER="docker@alerts.com"
+ENV EMAIL_TITLE="Docker Alerts"
 ENV DESTINATIONS="example@example.com"
 ENV SENDGRID_API_KEY="SG.KEY"
 ENV CPU_LIMIT=90
@@ -16,6 +18,7 @@ ENV MEM_LIMIT=90
 ENV HOSTNAME="undefined"
 
 COPY --from=builder /go/src/github.com/lucasmdrs/docker-alerts/docker-alerts .
+COPY template.html .
 
 RUN chmod +x docker-alerts \
     && mv /usr/local/bin/docker /usr/bin/docker

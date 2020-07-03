@@ -27,7 +27,7 @@ var (
 	title        = "Docker Alerts"
 	sender       = "docker@alerts.com"
 
-	gracePeriod              = time.Second * 60
+	gracePeriod              = time.Second * 600
 	containerGracefulMapping = ccMap.New()
 
 	memLimit float64 = 90
